@@ -1,7 +1,9 @@
-use std::{env, fs, io::stdin, process::exit};
+use std::{env, fmt::Display, fs, io::stdin, process::exit};
+
+use owo_colors::OwoColorize;
 
 #[derive(Debug)]
-struct StateMachine {
+struct BFInterpreter {
 	memory: Vec<u8>,
 	mem_ptr: usize,
 	program: Vec<DebugCommand>,
@@ -10,6 +12,14 @@ struct StateMachine {
 	input: Vec<u8>,
 	input_ptr: usize,
 	state: State,
+	steps: usize,
+	watchers: Vec<MemoryWatcher>,
+}
+
+#[derive(Debug)]
+struct MemoryWatcher {
+	index: usize,
+	value: u8,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -18,6 +28,7 @@ enum State {
 	Running,
 	TooFarLeft,
 	EndOfProgram,
+	StoppedOnMemoryValue,
 }
 
 #[derive(Debug)]
@@ -26,12 +37,6 @@ struct DebugCommand {
 	line_number: usize,
 	column: usize,
 }
-
-// #[derive(Debug)]
-// struct FastCommand {
-// 	command: Command,
-// 	count: u8,
-// }
 
 #[derive(Debug, Clone, Copy)]
 enum Command {
@@ -43,6 +48,7 @@ enum Command {
 	Write,
 	BeginLoop(usize),
 	EndLoop(usize),
+	End,
 }
 
 fn main() {
@@ -68,34 +74,37 @@ fn main() {
 
 	let program = parse(&source);
 
-	for c in &program {
-		print!("{}", c.command.char());
-	}
-	println!();
 	// dbg!(&code_dbg);
-	let mut state_machine = StateMachine::new(program, input_data);
+	let mut interpreter = BFInterpreter::new(program, input_data);
 	loop {
-		println!("{:?}", state_machine.memory);
-		println!("{:?}", state_machine.state);
-		println!("output: {}", String::from_utf8_lossy(&state_machine.output));
+		interpreter.show();
 		let mut action = String::new();
 		stdin().read_line(&mut action).unwrap();
-		action = action.trim().to_owned();
-		if action.starts_with("step ") {
-			if let Ok(num) = action[5..].trim().parse() {
-				state_machine.step(num);
+		let action: Vec<_> = action.trim().split_ascii_whitespace().collect();
+		match action.as_slice() {
+			["step"] => interpreter.step_once(),
+			["step", num] => _ = num.parse().map(|n| interpreter.step(n)),
+			["watch"] => println!("usage: watch [memory index] [value]"),
+			["watch", _] => println!("usage: watch [memory index] [value]"),
+			["watch", index, value] => {
+				if let (Ok(index), Ok(value)) = (index.parse(), value.parse()) {
+					interpreter.add_watch(index, value)
+				} else {
+					println!(
+						"{}",
+						"index and value must be valid usize and u8 integers".red()
+					);
+				}
 			}
-		}
-		match action.as_str() {
-			"step" => state_machine.step_once(),
-			"run" => state_machine.run(),
-			"exit" | "quit" => break,
-			_ => (),
+			["run"] => interpreter.run(),
+			["q" | "exit" | "quit"] => break,
+			[] => interpreter.step_once(),
+			_ => println!("{}", "unrecognised command".red()),
 		}
 	}
 }
 
-impl StateMachine {
+impl BFInterpreter {
 	fn new(program: Vec<DebugCommand>, input: Vec<u8>) -> Self {
 		Self {
 			memory: vec![0],
@@ -106,12 +115,59 @@ impl StateMachine {
 			input,
 			input_ptr: 0,
 			state: State::Running,
+			steps: 0,
+			watchers: Vec::new(),
 		}
+	}
+
+	fn show(&self) {
+		for (index, c) in self.program.iter().enumerate() {
+			if index == self.program_ptr {
+				print!("{}", c.command.on_cyan());
+			} else {
+				print!("{}", c.command);
+			}
+		}
+		println!();
+		println!(
+			"source: {}:{}",
+			self.program[self.program_ptr].line_number, self.program[self.program_ptr].column
+		);
+		print!("mem: ");
+		for (index, cell) in self.memory.iter().enumerate() {
+			if index == self.mem_ptr {
+				print!("{:3} ", cell.on_red());
+			} else {
+				print!("{:3} ", cell);
+			}
+		}
+		println!();
+		print!("ind: ");
+		for i in 0..self.memory.len() {
+			if i == self.mem_ptr {
+				print!("{:3} ", i.on_red());
+			} else {
+				print!("{:3} ", i);
+			}
+		}
+		println!();
+		println!("{:?}. steps: {}", self.state, self.steps);
+		println!("output: {}", String::from_utf8_lossy(&self.output));
+		// println!("input: {}", String::from_utf8_lossy(&self.input));
+	}
+
+	fn add_watch(&mut self, index: usize, value: u8) {
+		self.watchers.push(MemoryWatcher { index, value });
+	}
+
+	fn step_once(&mut self) {
+		self.state = State::Running;
+		self.step_internal();
 	}
 
 	fn step(&mut self, num: usize) {
 		for _ in 0..num {
-			self.step_once();
+			self.step_internal();
 			if self.state != State::Running {
 				break;
 			}
@@ -120,12 +176,12 @@ impl StateMachine {
 
 	fn run(&mut self) {
 		while self.state == State::Running {
-			self.step_once();
+			self.step_internal();
 		}
 	}
 
-	fn step_once(&mut self) {
-		if self.program_ptr >= self.program.len() {
+	fn step_internal(&mut self) {
+		if self.program_ptr + 1 == self.program.len() {
 			self.state = State::EndOfProgram;
 		}
 		if self.state != State::Running {
@@ -133,8 +189,14 @@ impl StateMachine {
 		}
 		let command = self.program[self.program_ptr].command;
 		match command {
-			Command::Inc => self.memory[self.mem_ptr] = self.memory[self.mem_ptr].wrapping_add(1),
-			Command::Dec => self.memory[self.mem_ptr] = self.memory[self.mem_ptr].wrapping_sub(1),
+			Command::Inc => {
+				self.memory[self.mem_ptr] = self.memory[self.mem_ptr].wrapping_add(1);
+				self.update_watchers();
+			}
+			Command::Dec => {
+				self.memory[self.mem_ptr] = self.memory[self.mem_ptr].wrapping_sub(1);
+				self.update_watchers();
+			}
 			Command::Right => {
 				self.mem_ptr += 1;
 				if self.mem_ptr >= self.memory.len() {
@@ -167,9 +229,19 @@ impl StateMachine {
 					self.program_ptr = start_of_loop;
 				}
 			}
+			Command::End => (),
 		}
 
 		self.program_ptr += 1;
+		self.steps += 1;
+	}
+
+	fn update_watchers(&mut self) {
+		for watcher in &self.watchers {
+			if watcher.index == self.mem_ptr && self.memory[watcher.index] == watcher.value {
+				self.state = State::StoppedOnMemoryValue;
+			}
+		}
 	}
 }
 
@@ -212,6 +284,11 @@ fn parse(source_text: &str) -> Vec<DebugCommand> {
 			});
 		}
 	}
+	out.push(DebugCommand {
+		command: Command::End,
+		line_number: 0,
+		column: 0,
+	});
 	if let Some(loop_start_index) = loop_starts.pop() {
 		let loop_start = &out[loop_start_index];
 		println!(
@@ -223,17 +300,22 @@ fn parse(source_text: &str) -> Vec<DebugCommand> {
 	out
 }
 
-impl Command {
-	fn char(&self) -> char {
-		match self {
-			Command::Inc => '+',
-			Command::Dec => '-',
-			Command::Right => '>',
-			Command::Left => '<',
-			Command::Read => ',',
-			Command::Write => '.',
-			Command::BeginLoop(_) => '[',
-			Command::EndLoop(_) => ']',
-		}
+impl Display for Command {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(
+			f,
+			"{}",
+			match self {
+				Command::Inc => '+',
+				Command::Dec => '-',
+				Command::Right => '>',
+				Command::Left => '<',
+				Command::Read => ',',
+				Command::Write => '.',
+				Command::BeginLoop(_) => '[',
+				Command::EndLoop(_) => ']',
+				Command::End => '_',
+			}
+		)
 	}
 }
