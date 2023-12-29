@@ -29,6 +29,7 @@ enum State {
 	TooFarLeft,
 	EndOfProgram,
 	StoppedOnMemoryValue,
+	BreakPointHit,
 }
 
 #[derive(Debug)]
@@ -48,6 +49,7 @@ enum Command {
 	Write,
 	BeginLoop(usize),
 	EndLoop(usize),
+	Break,
 	End,
 }
 
@@ -229,6 +231,7 @@ impl BFInterpreter {
 					self.program_ptr = start_of_loop;
 				}
 			}
+			Command::Break => self.state = State::BreakPointHit,
 			Command::End => (),
 		}
 
@@ -275,6 +278,7 @@ fn parse(source_text: &str) -> Vec<DebugCommand> {
 
 					Command::EndLoop(last_loop_start)
 				}
+				'!' => Command::Break,
 				_ => continue,
 			};
 			out.push(DebugCommand {
@@ -314,7 +318,8 @@ impl Display for Command {
 				Command::Write => '.',
 				Command::BeginLoop(_) => '[',
 				Command::EndLoop(_) => ']',
-				Command::End => '_',
+				Command::Break => '!',
+				Command::End => ' ',
 			}
 		)
 	}
