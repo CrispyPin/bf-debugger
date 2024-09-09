@@ -171,7 +171,7 @@ impl BFInterpreter {
 		}
 		println!();
 		println!("{:?}. steps: {}", self.state, self.steps);
-		println!("output: {}", String::from_utf8_lossy(&self.output));
+		println!("output: {}", String::from_utf8_lossy(&self.output).blue());
 		// println!("input: {}", String::from_utf8_lossy(&self.input));
 	}
 
