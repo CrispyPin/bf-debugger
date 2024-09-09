@@ -2,6 +2,22 @@ use std::{env, fmt::Display, fs, io::stdin, process::exit};
 
 use owo_colors::OwoColorize;
 
+const HELP_TEXT:&str = r#"HELP:
+Code breakpoints:
+    The ! character will be treated as a breakpoint, stopping execution
+
+[brackets] are optional parameters
+Command list:
+- step [n]
+    Step the progam n times (this is the default behavior when pressing enter with no command)
+- run
+    Run the program until the end
+- watch <cell> <value>
+    Create a breakpoint. Execution will stop when <cell> has <value>
+- quit | q | exit
+    Exit the debugger
+"#;
+
 #[derive(Debug)]
 struct BFInterpreter {
 	memory: Vec<u8>,
@@ -56,7 +72,7 @@ enum Command {
 fn main() {
 	let args: Vec<_> = env::args().collect();
 	if args.len() <= 1 {
-		println!("usage: brainfuck source_file input_file");
+		println!("usage: brainfuck <source_file> <input_file>");
 		exit(0);
 	}
 	let filename = &args[1];
@@ -84,6 +100,7 @@ fn main() {
 		stdin().read_line(&mut action).unwrap();
 		let action: Vec<_> = action.trim().split_ascii_whitespace().collect();
 		match action.as_slice() {
+			["help"] => println!("{}", HELP_TEXT.green()),
 			["step"] => interpreter.step_once(),
 			["step", num] => _ = num.parse().map(|n| interpreter.step(n)),
 			["watch"] => println!("usage: watch [memory index] [value]"),
@@ -132,7 +149,7 @@ impl BFInterpreter {
 		}
 		println!();
 		println!(
-			"source: {}:{}",
+			"source (line:column): {}:{}",
 			self.program[self.program_ptr].line_number, self.program[self.program_ptr].column
 		);
 		print!("mem: ");
